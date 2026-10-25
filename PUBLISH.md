@@ -58,6 +58,12 @@ git tag v1.0.0 && git push origin v1.0.0
 # 或：GitHub → Actions → publish → Run workflow
 ```
 
+首次发布的 tag 若因代码问题失败（此时 npm 上还没有该版本），修好后把 tag 移到新提交即可重新触发，无需改版本号：
+
+```bash
+git tag -f v1.0.0 && git push -f origin v1.0.0
+```
+
 ### `NPM_TOKEN` 从哪里来（2026 年后的 npm 规则）
 
 npm 已停止创建 Classic Token（2025-11 起），CI 发布必须用 **Granular Access Token**：

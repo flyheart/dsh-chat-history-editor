@@ -1,7 +1,6 @@
 {
   "name": "dsh-chat-history-editor",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
   "description": "Edit, delete, and append the model-visible chat history of a session from a dedicated History tab.",
   "license": "MIT",
@@ -49,7 +48,7 @@
   },
   "scripts": {
     "test": "node test/host.test.mjs && node test/command.test.mjs && node test/client.test.mjs",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "node tools/check-publish.mjs && npm test"
   },
   "publishConfig": {
     "access": "public"
