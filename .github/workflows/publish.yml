@@ -24,6 +24,6 @@ jobs:
         # the client/tools probes still run.
         run: npm test
       - name: Publish with provenance
-        run: npm publish --provenance --access public
+        run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
