@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Chat history editor">
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="#eaf2fb"/>
+  <path d="M20 14a22 22 0 1 1-6 15" fill="none" stroke="#247bbf" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M13 13v10h10" fill="none" stroke="#247bbf" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M32 20v13l10 6" fill="none" stroke="#247bbf" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="32" cy="34" r="3" fill="#247bbf"/>
+</svg>

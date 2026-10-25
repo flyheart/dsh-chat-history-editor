@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Chat History Editor",
+    "description": "Browse the model-visible history as a turn-grouped ledger and edit, delete, or append messages."
+  }
+}

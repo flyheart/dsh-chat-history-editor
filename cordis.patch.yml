@@ -1,0 +1,3 @@
+- insert:
+    - id: chat-history-editor
+      name: 'dsh-chat-history-editor'

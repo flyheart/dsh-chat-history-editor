@@ -1,0 +1,66 @@
+{
+  "name": "dsh-chat-history-editor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Edit, delete, and append the model-visible chat history of a session from a dedicated History tab.",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "history-ops.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "chat-history",
+    "history-editor"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1-rc.2"
+  },
+  "scripts": {
+    "test": "node test/host.test.mjs && node test/command.test.mjs && node test/client.test.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "author": "flyheart",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flyheart/dsh-chat-history-editor.git"
+  },
+  "homepage": "https://github.com/flyheart/dsh-chat-history-editor",
+  "bugs": {
+    "url": "https://github.com/flyheart/dsh-chat-history-editor/issues"
+  }
+}
