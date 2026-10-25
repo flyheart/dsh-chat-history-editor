@@ -50,12 +50,36 @@ npm login
 npm publish            # 未 scoped 包；如果改为 @scope/name，则用 npm publish --access public
 ```
 
-推送到 GitHub 并打 tag 时，`.github/workflows/publish.yml` 会用 `NPM_TOKEN` secret 自动发布并附带 provenance。也可以把 npm 的 trusted publishing 指向该 workflow，从而不再保存 token。
+推送到 GitHub 并打 tag 时，`.github/workflows/publish.yml` 会用 `NPM_TOKEN` secret 自动发布并附带 provenance：
 
 ```bash
 git push -u origin main
 git tag v1.0.0 && git push origin v1.0.0
+# 或：GitHub → Actions → publish → Run workflow
 ```
+
+### `NPM_TOKEN` 从哪里来（2026 年后的 npm 规则）
+
+npm 已停止创建 Classic Token（2025-11 起），CI 发布必须用 **Granular Access Token**：
+
+1. 用**要拥有这个包的 npm 账号**登录 <https://www.npmjs.com>。
+2. 头像 → **Access Tokens**（<https://www.npmjs.com/settings/~/tokens>）→ **Generate New Token** → **Granular Access Token**。
+3. 配置：
+   - Name：如 `github-actions-publish`；
+   - Expiration：建议 90 天以内（write 权限 token 有最长有效期限制），到期前轮换；
+   - Permissions：**Read and write**（不要选 "stage only"，那是 `npm stage publish` 用的）；
+   - **Bypass 2FA：勾选**（GitHub Actions 是非交互环境，不勾会报 `EOTP`）；
+   - Packages and scopes：**All packages**（最省事），或只选 `dsh-chat-history-editor`；
+   - Organizations：无。
+4. **Generate token**，复制只显示一次的 `npm_...`。
+5. GitHub 仓库 → **Settings → Secrets and variables → Actions → New repository secret**：
+   Name 填 `NPM_TOKEN`，Value 粘贴 token（workflow 已写 `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}`）。
+
+注意：
+
+- 勾了 Bypass 2FA 的 token 仍能直接 `npm publish`，但 npm 计划 **2027-01 起移除 bypass-2FA token 的直接发布能力**，长期应改用 **Trusted Publishing（OIDC）**：先在 npmjs 包页面 Settings → Trusted Publisher 里填 GitHub Actions（owner `flyheart`、repo `dsh-chat-history-editor`、workflow 文件名 `publish.yml`），之后把 workflow 里的 `NODE_AUTH_TOKEN` 那行删掉即可（`id-token: write` 和 `--provenance` 已经配好）。一般先成功发布过一次（包页面存在）再配置。
+- 只想手动发布、不配 Actions 时完全不需要 token：本机 `npm login`（浏览器登录 + 2FA）后 `npm publish` 即可。
+- token 只放 GitHub Secret，不要提交进仓库；泄漏立即在 npm 页面 Revoke。
 
 `prepublishOnly` 会再跑一遍测试。发布后确认：
 
