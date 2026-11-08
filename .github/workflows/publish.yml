@@ -32,3 +32,15 @@ jobs:
         # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC token with the
         # registry, and trusted publishing generates provenance automatically.
         run: npm publish
+      - name: Verify the version is visible on the registry
+        # A silent publish failure must fail the job instead of reporting success.
+        run: |
+          version=$(node -p "require('./package.json').version")
+          for attempt in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/dsh-chat-history-editor/$version")
+            echo "registry dsh-chat-history-editor@$version -> HTTP $code (attempt $attempt)"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "::error::published version $version is not visible on the registry"
+          exit 1
