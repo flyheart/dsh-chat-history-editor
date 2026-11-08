@@ -95,7 +95,17 @@ npm trust list dsh-chat-history-editor   # 确认配置存在
 **常见错误**
 
 - `At least one permission flag is required (--allow-publish, --allow-stage-publish)`：漏了权限标记，按上面命令加上。
-- `403 Forbidden - GET https://registry.npmjs.org/-/package/<pkg>/trust`：本机 `~/.npmrc` 里的 `_authToken` 是 **Bypass 2FA 的 Granular Token**（例如给 CI 用的那个），trust 接口明确拒绝这类 token。先 `npm logout`，再用 `npm login --auth-type=web` 做一次网页登录（或改用 npm 网页配置），不要用 `NODE_AUTH_TOKEN` / bypass token 执行 trust 命令。
+- `403 Forbidden - GET/POST https://registry.npmjs.org/-/package/<pkg>/trust`，并伴随 `npm tokens that bypass 2FA are being restricted...` 提示：本机 `~/.npmrc` 里的 `_authToken` 是 **Bypass 2FA 的 Granular Token**（例如给 CI 用的那个），trust 接口明确拒绝这类 token。注意 `npm whoami` 能成功、普通 `npm publish` 也能用，**不代表 token 可用于 trust 命令**。处理：
+
+  ```bash
+  npm config delete //registry.npmjs.org/:_authToken --location=user   # 显式清掉 token
+  npm whoami                                  # 应该报 need auth；若仍显示用户名，检查是否还有别的 token 来源
+  npm login --auth-type=web                   # 浏览器登录 + 2FA，生成普通登录 token
+  npm whoami                                  # 再确认身份
+  npm trust list dsh-chat-history-editor      # 不再 403 才继续
+  ```
+
+  若 CLI 仍 403，直接用下面的 npm 网页方式配置（最稳）。不要用 `NODE_AUTH_TOKEN` 环境变量或 bypass token 执行 trust 命令。
 
 - `--file` 是**仓库内**的 workflow 文件名，必须与实际文件一致：`publish.yml`；
 - 未配置 environment 时不要传 `--env`；
