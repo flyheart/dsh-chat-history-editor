@@ -72,20 +72,30 @@ workflow 已经改成 OIDC：没有 `NODE_AUTH_TOKEN`，发布时 npm 用 GitHub
 
 - 包已存在于 npm（`dsh-chat-history-editor` 已发布）；
 - npm 账号已启用 **2FA**（trust 命令强制要求）；
-- 本机 npm **≥ 11.10.0**（`npm trust` 命令需要）；
+- 本机 npm **≥ 11.15.0**（`npm trust` 命令需要）；
 - 不能用“Bypass 2FA”的 Granular Token 执行 trust 命令（会拒绝），必须用交互登录。
 
 **方式 A：`npm trust` 命令行（推荐）**
 
 ```bash
-npm install -g npm@^11.10.0
-npm login                      # 浏览器登录 + 2FA（第一次会要求 OTP）
+npm install -g npm@^11.15.0
+npm logout                     # 见下方“常见错误”：先清掉本机可能存在的 bypass-2FA token
+npm login --auth-type=web      # 浏览器登录 + 2FA
+npm whoami                     # 确认身份（如 jake001）
 npm trust github dsh-chat-history-editor \
   --file publish.yml \
   --repo flyheart/dsh-chat-history-editor \
+  --allow-publish \
   --yes
 npm trust list dsh-chat-history-editor   # 确认配置存在
 ```
+
+`--allow-publish` 是必填的权限标记（npm 11.15+ 要求至少一个）：它允许该 trusted publisher 执行 `npm publish`。如果以后改用 `npm stage publish`，再加 `--allow-stage-publish`（两个可以同时给）。
+
+**常见错误**
+
+- `At least one permission flag is required (--allow-publish, --allow-stage-publish)`：漏了权限标记，按上面命令加上。
+- `403 Forbidden - GET https://registry.npmjs.org/-/package/<pkg>/trust`：本机 `~/.npmrc` 里的 `_authToken` 是 **Bypass 2FA 的 Granular Token**（例如给 CI 用的那个），trust 接口明确拒绝这类 token。先 `npm logout`，再用 `npm login --auth-type=web` 做一次网页登录（或改用 npm 网页配置），不要用 `NODE_AUTH_TOKEN` / bypass token 执行 trust 命令。
 
 - `--file` 是**仓库内**的 workflow 文件名，必须与实际文件一致：`publish.yml`；
 - 未配置 environment 时不要传 `--env`；
