@@ -8,7 +8,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write # GitHub OIDC token, exchanged by npm for a publish credential
 
 jobs:
   publish:
@@ -18,12 +18,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
+      - name: Install the npm CLI trusted publishing requires
+        # Trusted publishing needs npm >= 11.10.0; Node 22 bundles npm 10.x.
+        # The registry is set explicitly so no .npmrc auth placeholder is needed.
+        run: |
+          npm install -g npm@^11.10.0
+          npm config set registry https://registry.npmjs.org/
+          npm --version
       - name: Test
-        # The Host probes need an installed DSH; without one they skip, while
-        # the client/tools probes still run.
+        # Host probes skip when no DSH installation is present; client/tools probes run.
         run: npm test
-      - name: Publish with provenance
-        run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish through OIDC trusted publishing
+        # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC token with the
+        # registry, and trusted publishing generates provenance automatically.
+        run: npm publish
