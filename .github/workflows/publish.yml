@@ -33,14 +33,17 @@ jobs:
         # registry, and trusted publishing generates provenance automatically.
         run: npm publish
       - name: Verify the version is visible on the registry
-        # A silent publish failure must fail the job instead of reporting success.
+        # The registry can take a minute or two to expose a new version; retry
+        # patiently so a successful OIDC publish is not reported as a failure.
         run: |
           version=$(node -p "require('./package.json').version")
-          for attempt in 1 2 3 4 5; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/dsh-chat-history-editor/$version")
-            echo "registry dsh-chat-history-editor@$version -> HTTP $code (attempt $attempt)"
-            if [ "$code" = "200" ]; then exit 0; fi
-            sleep 5
+          for attempt in $(seq 1 24); do
+            document=$(curl -s "https://registry.npmjs.org/dsh-chat-history-editor?write=true")
+            case "$document" in
+              *"\"$version\":"*) echo "registry shows dsh-chat-history-editor@$version (attempt $attempt)"; exit 0 ;;
+            esac
+            echo "attempt $attempt: dsh-chat-history-editor@$version not visible yet"
+            sleep 10
           done
           echo "::error::published version $version is not visible on the registry"
           exit 1

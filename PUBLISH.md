@@ -133,7 +133,7 @@ git push origin main
 git tag v1.0.2 && git push origin v1.0.2
 ```
 
-Actions 日志里应看到 `Publish through OIDC trusted publishing` 步骤成功（无 token），发布后：
+Actions 日志里应看到 `Publish through OIDC trusted publishing` 步骤成功（无 token）。registry 对新版本的可见性有约 1–2 分钟延迟，workflow 里的 `Verify the version is visible on the registry` 步骤会耐心重试（最长约 4 分钟）；如果 publish 成功但 Verify 仍失败，等版本在 registry 出现后在 Actions 页面点 **Re-run failed jobs** 即可变绿，不需要重新发版。发布后：
 
 ```bash
 npm view dsh-chat-history-editor@1.0.2 dist.attestations --json   # 应有 provenance
