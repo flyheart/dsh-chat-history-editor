@@ -25,7 +25,7 @@ Manifest 必须满足的约定（已就绪，除名称/private 外不用改）�
 | `exports["."]` / `exports["./client"]` | Host / Client 入口，缺 Client 入口会拒绝加载 |
 | `exports["./locale/*.json"]`、`exports["./icon"]` | Plugin Manager / Discover 的标题、描述、图标 |
 | Client 模块 id | **必须等于包名**（`client.js` 里 `window.__ModuleLoader__.load({ id })`） |
-| `engines.dsh` | DSH 版本兼容范围，安装前检查；当前为 `>=0.2.1-rc.2` |
+| `engines.dsh` | DSH 版本兼容范围，安装前检查；当前为 `>=0.2.1-rc.2 <0.3.0-0`（覆盖 DSH Desktop 的 `0.2.2-alpha.2`） |
 | `private` | 发布前必须删除 |
 
 命名：`@local/...` 只是本地占位，npm 上不能用别人的 scope。用自带的改名工具一次性同步所有必须一致的位置：
@@ -129,13 +129,37 @@ dsh --profile plugin-test --from-default-profile web --port 0 --no-open
 - 会话视图环出现「历史」页签，Chat / 轨迹 / 历史三个页签正常。
 - 发布前在插件里自测过：即时编辑、删除、末尾新增、分支改写（开关 + 应用改写）。
 
+### DSH Desktop（0.13.x）
+
+DSH Desktop 用的仍是同一个 `web` profile（`DSH_HOME` 为
+`~/Library/Application Support/dsh-desktop/harness`），页面还是同一套 Web 客户端，
+所以 Client 半（`dsh.client.platform: "web"`）和 Host 半都原样加载，不需要单独的
+desktop 构建；`engines.dsh` 的 `>=0.2.1-rc.2 <0.3.0-0` 已覆盖 Desktop 的内核
+（`0.2.2-alpha.2`）。
+
+首次启动时 Desktop 可能导入 CLI 的 `~/.dsh`。导入对第三方插件只复制
+`package.json`（manifest-only stub），等后续 profile maintenance 重装；一旦
+maintenance 因为其他导入 bundle 没有已安装 manifest 而 deferred，stub 就会留在
+profile 里——下次启动 preflight 读不到 `cordis.patch.yml`，Desktop 进入 Safe Mode
+并把插件禁用。修复用仓库自带的工具（幂等，默认只处理本插件和它的禁用标记）：
+
+```bash
+node tools/desktop-repair.mjs --dry-run   # 先看会改什么
+node tools/desktop-repair.mjs             # 修复 Desktop 的 web profile
+# 然后退出 Safe Mode / 重启 Desktop
+```
+
+该修复已在 DSH Desktop 0.13.2（Harness `0.2.2-alpha.2` + Desktop overlay）实测：
+「历史」页签出现在 对话 / 轨迹 / 历史 视图环，台账渲染正常，编辑操作经
+`/history` 命令写入 surface 后立即生效。
+
 ## 3. 升级与回滚
 
 - 改代码后 `npm version patch|minor|major`，重新 `npm publish`。
 - 已装旧版本时，Plugin Manager 的 `install_bundle` 会返回 `already-installed`；用 Plugins 页面的 Update（内部是“先移除再安装”），或先 `remove_bundle` 再安装新 target。
 - 没有 HMR 的 profile 安装/升级后需要重启；`web` profile 默认启用 HMR，安装后即时生效。
 - 改动了 `engines.dsh`（例如需要更新的 DSH）时，旧运行时会被拒绝并给出 `incompatible-version`；管理员可按 Plugin Manager 的 `list_version_exemptions` / `set_version_exemption` 流程临时放行（有风险确认）。
-- 注意 semver 预发布语义：`>=0.2.1-rc.2` 这类范围只覆盖同一 `major.minor.patch` 元组（0.2.1）的预发布版；DSH 升级到新的 minor（如 0.3.0-rc.1）后，需要发一个新插件版本并把 `engines.dsh` 更新到相应范围（或由用户走兼容性豁免）。
+- 注意 semver 预发布语义：DSH 的兼容性检查按 `includePrerelease` 计算，所以 `>=0.2.1-rc.2 <0.3.0-0` 同时覆盖 `0.2.1-rc.x`、`0.2.2-alpha.x`（DSH Desktop 当前内核）等 0.2.x 预发布；显式上界保证 DSH 0.3 的预发布不会被误接受。DSH 进入新 minor（如 0.3.0-rc.1）后，需要发新插件版本并把上界更新到相应范围（或由用户走兼容性豁免）。
 - 插件在 profile 内生效，**所有会话**共享同一份安装；Host 代码以 DSH 进程身份运行（在 workspace 沙箱之外），审阅后再发布/安装。
 
 ## 4. 发布到自建插件市场（可选）

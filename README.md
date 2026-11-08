@@ -156,6 +156,47 @@ plugin_manager install_bundle { "target": "<absolute path to this directory>" } 
 
 Then open a conversation and switch the view ring from *Chat* to *History*.
 
+## DSH Desktop
+
+DSH Desktop 0.13.2 runs the same web client surface as the `web` profile (a
+local Harness whose page is loaded in the desktop window), so this bundle needs
+no separate desktop build: `dsh.client.platform` stays `"web"`, the Host half
+mounts in the Desktop-owned Harness process, and the History tab joins the
+Desktop view ring (`Chat` / `Trajectory` / `History`) unchanged. The declared
+`engines.dsh` range covers the Desktop runtime (`0.2.2-alpha.2` at the time of
+writing, plus the rest of the `0.2.x` line).
+
+Install it from **Settings → Plugins** (or the `plugin_manager` tool) while the
+Desktop profile is healthy; `/Applications/DSH Desktop.app` ships its own pnpm,
+so no global toolchain is required.
+
+### Repairing a profile imported from the CLI web home
+
+On first launch Desktop can import a CLI Harness home (`~/.dsh`). That import
+copies a third-party plugin as a **manifest-only stub**
+(`profiles/web/node_modules/<plugin>/package.json`) and expects a later profile
+migration to reinstall it. When that migration is deferred (for example because
+another imported bundle has no installed manifest), the stub stays behind and
+the next launch fails preflight:
+
+```text
+normal Profile startup inputs are invalid: failed to prepare profile bundle
+  dsh-chat-history-editor
+Caused by: failed to read overlay .../dsh-chat-history-editor/cordis.patch.yml
+```
+
+Desktop then boots Safe Mode and disables the plugin. Restore the package body
+and clear the disable marker, then restart Desktop (quit Safe Mode):
+
+```bash
+node tools/desktop-repair.mjs --dry-run   # show what would change
+node tools/desktop-repair.mjs             # repair the Desktop web profile
+```
+
+The tool is idempotent, prints the resolved DSH home and profile, and only
+touches this package's directory plus its entry in
+`.dsh-market/state.json`.
+
 ## Publishing
 
 See [PUBLISH.md](PUBLISH.md) for the npm release flow, install targets, update and
