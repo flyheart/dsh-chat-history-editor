@@ -123,7 +123,7 @@ check('append over the command succeeds and reaches deriveMessages', () => {
   assert.deepEqual(derivedTexts(session), ['hello', 'hi', 'from the editor'])
 })
 
-check('edit and delete run through the command wrapper', () => {
+check('edit a user message through the command wrapper', () => {
   const session = buildSession()
   const { definition } = mount(session)
   const rows = session.surface.nodes
@@ -133,12 +133,20 @@ check('edit and delete run through the command wrapper', () => {
     { kind: 'success' }
   )
   assert.deepEqual(derivedTexts(session), ['edited', 'hi'])
+})
+
+check('a step-scoped operation is classified as needing a branch while idle', () => {
+  const session = buildSession()
+  const { definition } = mount(session)
+  const before = session.seq
   const assistantSeq = session.surface.nodes.find((seq) => session.eventAt(seq)?.type === 'assistant/message')
-  assert.deepEqual(
-    definition.handler({ rawInput: JSON.stringify({ op: 'delete', seqs: [assistantSeq] }), agent: { id: session.id, status: 'idle', session } }),
-    { kind: 'success' }
-  )
-  assert.deepEqual(derivedTexts(session), ['edited'])
+  const result = definition.handler({
+    rawInput: JSON.stringify({ op: 'delete', seqs: [assistantSeq] }),
+    agent: { id: session.id, status: 'idle', session }
+  })
+  assert.equal(result.kind, 'error')
+  assert.match(result.text, /^\[needs-branch\] /)
+  assert.equal(session.seq, before, 'a refused operation appends nothing')
 })
 
 check('malformed payloads return a classified error without touching the log', () => {

@@ -16,6 +16,16 @@
  * Tool results are kept tool-pairing balanced: deleting a message that takes
  * part in a tool call/result pair extends the deletion to its counterpart.
  *
+ * Read-path framing rule: the Session format admits `system/message`,
+ * `developer/message`, `assistant/message` and `tool/*` writes only while a
+ * Turn *and* a Step are open, and their `turn`/`step` must name that open step
+ * (`Relationships.requireStep` in the v3→v4 format package). An append outside
+ * an open step is accepted in memory but the stored log then fails every later
+ * read with `… does not match an open turn and step`, so such a mutation is not
+ * representable in an append-only log and must be applied as a rewritten branch
+ * instead. Every write here therefore resolves the open step first and fails
+ * with `needs-branch` when there is none.
+ *
  * This module imports nothing from the Harness so it can be exercised against a
  * plain `Session` instance in a Node probe.
  *
@@ -79,6 +89,65 @@ function positiveCount(value, fallback) {
 /** @returns {string} a fresh durable message identity. */
 function newMessageId() {
   return randomUUID()
+}
+
+/**
+ * Read the Turn/Step that is currently open in the live log.
+ *
+ * The Session format admits `system/message`, `developer/message`,
+ * `assistant/message` and `tool/*` writes only inside an open step, and their
+ * `data.turn`/`data.step` must name exactly that step. The busy guard already
+ * refuses to run while the agent is working, so a history mutation normally has
+ * no open step: those mutations are not representable in the append-only log and
+ * must be applied as a rewritten branch instead of being appended in place.
+ *
+ * @param {object} session - live Session instance.
+ * @returns {{ turn: number, step: number } | undefined} the open coordinates,
+ *   or undefined when no Turn or no Step is open.
+ */
+export function openStepPosition(session) {
+  let turn = null
+  let step = null
+  for (let seq = 0; seq < session.seq; seq += 1) {
+    const event = session.eventAt(seq)
+    if (event === undefined) continue
+    if (event.type === 'turn/start') {
+      turn = Number.isInteger(event.data?.turn) && event.data.turn > 0 ? event.data.turn : null
+      step = null
+      continue
+    }
+    if (event.type === 'turn/end') {
+      turn = null
+      step = null
+      continue
+    }
+    if (event.type === 'step/start') {
+      step = Number.isInteger(event.data?.step) && event.data.step > 0 ? event.data.step : null
+      continue
+    }
+    if (event.type === 'step/end') step = null
+  }
+  if (turn === null || step === null) return undefined
+  return { turn, step }
+}
+
+/**
+ * Resolve the coordinates one mutation must write, refusing an in-place write
+ * the read path would reject later.
+ * @param {object} session - live Session instance.
+ * @param {{ turn: number, step: number } | undefined} position - caller override.
+ * @param {string} subject - operation name for the diagnostic.
+ * @returns {{ turn: number, step: number }} the open step coordinates.
+ */
+function requireOpenStep(session, position, subject) {
+  const resolved = position ?? openStepPosition(session)
+  if (resolved === undefined) {
+    fail(
+      'needs-branch',
+      `${subject} cannot be written outside an open turn/step; apply it as a rewritten branch instead`
+    )
+  }
+  return resolved
 }
 
 /** @returns {string} a fresh identity marking an explicit system prompt override. */
@@ -171,17 +240,6 @@ function rowPosition(row) {
     turn: positiveCount(row?.position?.turn, 1),
     step: positiveCount(row?.position?.step, 1)
   }
-}
-
-/** @param {object[]} rows @returns {{ turn: number, step: number }} the last canonical positive position. */
-function lastPosition(rows) {
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    const position = rows[index].position
-    if (position !== undefined) {
-      return { turn: positiveCount(position.turn, 1), step: positiveCount(position.step, 1) }
-    }
-  }
-  return { turn: 1, step: 1 }
 }
 
 /**
@@ -348,12 +406,19 @@ export function planDeletion(rows, requestedSeqs) {
 
 /**
  * Rewrite one message in place.
+ *
+ * A user-role replacement is a plain surface replacement and needs no open
+ * step. System-prompt and assistant rewrites append step-scoped events, so they
+ * are refused with `needs-branch` when the log has no open Turn/Step.
+ *
  * @param {object} session - live Session.
  * @param {number} seq - current surface node sequence to rewrite.
  * @param {unknown} text - replacement text.
+ * @param {{ turn: number, step: number } | undefined} [position] - open step to
+ *   write into; resolved from the log when omitted.
  * @returns {{ seq: number }} the shadowed node sequence.
  */
-export function editSurfaceMessage(session, seq, text) {
+export function editSurfaceMessage(session, seq, text, position) {
   const accepted = validText(text)
   const rows = readSurface(session)
   const index = rows.findIndex((row) => row.seq === seq)
@@ -365,15 +430,15 @@ export function editSurfaceMessage(session, seq, text) {
     // The system prompt is the rendered prompt history node. Rewriting it with a
     // `history-editor` source marks it as an explicit user override; the plugin's
     // assembly pin keeps that text effective until the user restores the default.
-    const position = rowPosition(row)
+    const at = requireOpenStep(session, position, 'a system prompt edit')
     const preserved = Array.isArray(message.content)
       ? message.content.filter((block) => block !== null && typeof block === 'object' && block.type !== 'text')
       : []
     session.append(
       'system/message',
       {
-        turn: position.turn,
-        step: position.step,
+        turn: at.turn,
+        step: at.step,
         message: {
           id: newOverrideId(),
           role: 'system',
@@ -390,12 +455,11 @@ export function editSurfaceMessage(session, seq, text) {
       const laterMessage = laterRow.message
       if (laterMessage === null || laterMessage.role !== 'system') continue
       if (contentText(laterMessage.content).trim() === '') continue
-      const laterPosition = rowPosition(laterRow)
       session.append(
         'system/message',
         {
-          turn: laterPosition.turn,
-          step: laterPosition.step,
+          turn: at.turn,
+          step: at.step,
           message: { id: newMessageId(), role: 'system', content: [], source: { kind: 'system-prompt' } }
         },
         { surfaceOp: { op: 'replace', startSeq: laterRow.seq, endSeq: laterRow.seq }, sourceEventSeqs: [laterRow.seq] }
@@ -431,13 +495,13 @@ export function editSurfaceMessage(session, seq, text) {
     if (laterVisible) {
       fail('assistant-not-last', 'only the last assistant message can be rewritten; delete the message instead')
     }
-    const position = rowPosition(row)
+    const at = requireOpenStep(session, position, 'an assistant message rewrite')
     const source = assistantSource(rows, row)
     session.append(
       'assistant/message',
       {
-        turn: position.turn,
-        step: position.step,
+        turn: at.turn,
+        step: at.step,
         message: {
           id: newMessageId(),
           role: 'assistant',
@@ -448,7 +512,7 @@ export function editSurfaceMessage(session, seq, text) {
       },
       { surfaceOp: 'append' }
     )
-    appendTombstone(session, position, seq, seq, [seq])
+    appendTombstone(session, at, seq, seq, [seq])
     return { seq }
   }
   fail('not-editable', 'only user and assistant messages can be rewritten')
@@ -456,17 +520,24 @@ export function editSurfaceMessage(session, seq, text) {
 
 /**
  * Remove one or more messages from the model-visible history.
+ *
+ * A deletion is an empty `developer/message` replacement, which is step-scoped:
+ * it is refused with `needs-branch` when the log has no open Turn/Step.
+ *
  * @param {object} session - live Session.
  * @param {unknown} seqs - current surface node sequences to remove.
+ * @param {{ turn: number, step: number } | undefined} [position] - open step to
+ *   write into; resolved from the log when omitted.
  * @returns {{ removed: number, ranges: number }} removed node count and replacement count.
  */
-export function deleteSurfaceMessages(session, seqs) {
+export function deleteSurfaceMessages(session, seqs, position) {
   const requested = validSeqList(seqs)
   const rows = readSurface(session)
   const runs = planDeletion(rows, requested)
+  const at = requireOpenStep(session, position, 'deleting history')
   let removed = 0
   for (const run of runs) {
-    appendTombstone(session, run.position, run.startSeq, run.endSeq, run.shadowedSeqs)
+    appendTombstone(session, at, run.startSeq, run.endSeq, run.shadowedSeqs)
     removed += run.shadowedSeqs.length
   }
   return { removed, ranges: runs.length }
@@ -474,12 +545,18 @@ export function deleteSurfaceMessages(session, seqs) {
 
 /**
  * Append one new model-visible message at the end of the history.
+ *
+ * A user append is a plain surface append. An assistant append is step-scoped
+ * and refused with `needs-branch` when the log has no open Turn/Step.
+ *
  * @param {object} session - live Session.
  * @param {unknown} role - `user` or `assistant`.
  * @param {unknown} text - message text.
+ * @param {{ turn: number, step: number } | undefined} [position] - open step to
+ *   write into; resolved from the log when omitted.
  * @returns {{ role: string }} the appended role.
  */
-export function appendSurfaceMessage(session, role, text) {
+export function appendSurfaceMessage(session, role, text, position) {
   const accepted = validText(text)
   const rows = readSurface(session)
   if (role === 'user') {
@@ -491,13 +568,13 @@ export function appendSurfaceMessage(session, role, text) {
     return { role: 'user' }
   }
   if (role === 'assistant') {
-    const position = lastPosition(rows)
+    const at = requireOpenStep(session, position, 'an appended assistant message')
     const source = assistantSource(rows, undefined)
     session.append(
       'assistant/message',
       {
-        turn: position.turn,
-        step: position.step + 1,
+        turn: at.turn,
+        step: at.step,
         message: {
           id: newMessageId(),
           role: 'assistant',
@@ -674,6 +751,11 @@ export function rebuildRewrittenSession(target, sourceEvents, draft) {
     if (row.role !== 'system') continue
     effectiveSystem = row
   }
+  // A draft without a system row (for example Restore default, which deletes the
+  // override) must still start the child with a system head: the format protects
+  // the first surface node, and the agent loop renders the assembled prompt into
+  // that head on the next request. Emit one empty head before the first message.
+  let needsSystemHead = effectiveSystem === undefined
 
   const groups = []
   for (const row of kept) {
@@ -696,6 +778,18 @@ export function rebuildRewrittenSession(target, sourceEvents, draft) {
     }
     stepCounter += 1
     target.append('step/start', { turn: turnCounter, step: stepCounter })
+    if (needsSystemHead) {
+      target.append(
+        'system/message',
+        {
+          turn: turnCounter,
+          step: stepCounter,
+          message: { id: newMessageId(), role: 'system', content: [], source: { kind: 'system-prompt' } }
+        },
+        { surfaceOp: 'append' }
+      )
+      needsSystemHead = false
+    }
     for (const row of group.rows) {
       if (row.role === 'system') {
         if (row !== effectiveSystem) continue
@@ -805,10 +899,16 @@ function isOverrideMessage(message) {
  * Drop every explicit system prompt override by replacing the marked system
  * nodes with empty system nodes. The next model request then re-renders the
  * assembled prompt into history.
+ *
+ * The replacement is step-scoped, so it is refused with `needs-branch` when the
+ * log has no open Turn/Step.
+ *
  * @param {object} session - live Session.
+ * @param {{ turn: number, step: number } | undefined} [position] - open step to
+ *   write into; resolved from the log when omitted.
  * @returns {{ cleared: number }} number of override nodes cleared.
  */
-export function resetSystemPrompt(session) {
+export function resetSystemPrompt(session, position) {
   const rows = readSurface(session)
   const marked = rows.filter((row) => {
     if (row.message === null || row.message.role !== 'system') return false
@@ -816,13 +916,13 @@ export function resetSystemPrompt(session) {
     return isOverrideMessage(row.event.data?.message)
   })
   if (marked.length === 0) fail('no-override', 'the system prompt has no history-editor override to reset')
+  const at = requireOpenStep(session, position, 'restoring the default system prompt')
   for (const row of marked) {
-    const position = rowPosition(row)
     session.append(
       'system/message',
       {
-        turn: position.turn,
-        step: position.step,
+        turn: at.turn,
+        step: at.step,
         message: { id: newMessageId(), role: 'system', content: [], source: { kind: 'system-prompt' } }
       },
       { surfaceOp: { op: 'replace', startSeq: row.seq, endSeq: row.seq }, sourceEventSeqs: [row.seq] }

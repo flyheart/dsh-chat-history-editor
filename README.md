@@ -39,15 +39,21 @@ browser). It has two behaviors:
 
 | Mode | Behavior |
 |---|---|
-| Off (default) | Immediate in-place operations: edit user/context/system-prompt rows, delete a balanced range, append at the end. Assistant rows can only be rewritten while they are the last visible row. The Chat transcript stays append-only. |
+| Off (default) | Immediate in-place operations for everything the append-only log can express while the agent is idle: edit a **user-role** row (human message or injected context) and append a **user** message. Every other action — system-prompt edit, assistant rewrite, delete, append assistant, restore default — is step-scoped and cannot be written while idle, so it switches the tab into branch rewrite and drops the change into the draft: press **Apply rewrite** to fork it. The Chat transcript stays append-only. |
 | On | Every row becomes editable and deletable, and a new message can be inserted above/below any row. Changes stay in a **draft** (marked 待修改/待删除/待插入) until you press **Apply rewrite**: the plugin forks the session at its first event, rebuilds the edited conversation into the new child session, flushes it, and switches the page to it. |
 
 Why a branch: the session log is append-only and the format forbids
 `assistant/message` replacements, so editing an assistant message in place (or
-inserting mid-history) cannot be expressed in the current log. A rewritten
-branch is a normal session whose Chat, Trajectory, and model history all show
-the edited conversation; the original session is left untouched and its edits
-remain a draft you can discard.
+inserting mid-history) cannot be expressed in the current log. Deletions and
+system-prompt/assistant writes have a second constraint: the format admits
+`system/message`, `developer/message`, `assistant/message` and `tool/*` appends
+only while a Turn **and** a Step are open. The History tab edits while the agent
+is idle, when no step is open, so those writes are not representable at all —
+the Host classifies them `needs-branch` instead of appending a log that would
+fail every later resume with `… does not match an open turn and step`, and the
+Client switches to the branch draft. A rewritten branch is a normal session
+whose Chat, Trajectory, and model history all show the edited conversation; the
+original session is left untouched and its edits remain a draft you can discard.
 
 What the rebuild preserves:
 
@@ -70,11 +76,11 @@ rewrites stored events. It appends well-formed *surface* events:
 
 | Operation | Appended events |
 |---|---|
-| Edit user-role message (human or injected context) | `user/message` replacement of its own surface node; the recorded source kind is preserved |
-| Delete messages | empty `developer/message` replacement: a surface node that projects no model message |
-| Add message | ordinary surface append at the tail |
-| Edit assistant message | fresh `assistant/message` append for the same Turn/Step plus a hidden tombstone for the old node |
-| Edit system prompt | `system/message` replacement (identity prefixed `history-editor-`) + a Host assembly pin; **Restore default** clears it with empty system replacements |
+| Edit user-role message (human or injected context) | `user/message` replacement of its own surface node; the recorded source kind is preserved. Writable in place while idle. |
+| Delete messages | empty `developer/message` replacement: a surface node that projects no model message. Step-scoped → branch rewrite. |
+| Add message | ordinary surface append at the tail (user in place while idle; assistant is step-scoped → branch rewrite). |
+| Edit assistant message | fresh `assistant/message` append for the same Turn/Step plus a hidden tombstone for the old node. Step-scoped → branch rewrite. |
+| Edit system prompt | `system/message` replacement (identity prefixed `history-editor-`) + a Host assembly pin; step-scoped → branch rewrite. **Restore default** clears it by rebuilding a branch whose system head is empty, so the next request re-renders the assembly. |
 
 Consequences you should know about:
 
@@ -100,10 +106,16 @@ Consequences you should know about:
   assembled prompt (persona, skill guidance, harness identity) and stays in
   effect until **Restore default** is used, which empties the override nodes so
   the next request re-renders the assembly.
-- Every written event carries a canonical **positive `turn`/`step`**. The JSONL
-  read path admits `developer/message` and `system/message` only with positive
-  coordinates, so a zero coordinate would make a session unreadable on resume.
-  Both host probes assert this with the real read-path admission validator.
+- Every written event carries a canonical **positive `turn`/`step` that names
+  the currently open step**. Two read-path checks apply: per-row admission
+  requires positive coordinates for `developer/message` and `system/message`,
+  and the V4 relationship validator (`Relationships.requireStep`) requires
+  `system/message`, `developer/message`, `assistant/message` and `tool/*`
+  writes to match the open Turn/Step exactly. A write outside an open step is
+  accepted in memory but makes the stored log unreadable on the next resume
+  (`… does not match an open turn and step`). This is why the Host classifies
+  those mutations `needs-branch`; the host probes assert the full read path
+  (`restoreReleasedV4Artifact`) after every operation, not just row admission.
 
 ## How the UI reaches the Host
 
@@ -121,7 +133,10 @@ supported client-callable extension point: a session command.
 
 Operations are refused while a turn is running. (Maintenance work such as an
 automatic compaction maps to the idle status and may still append concurrently;
-every append is atomic, so the log stays consistent.)
+every append is atomic, so the log stays consistent.) Operations that need an
+open Turn/Step are additionally refused with `needs-branch` when the log has
+none, so an old Client (or a direct command call) cannot append a log that a
+later resume would reject.
 
 ## Files
 
