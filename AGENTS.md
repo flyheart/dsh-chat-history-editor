@@ -78,9 +78,21 @@ them can make a session unreadable or break the next model request.
    assistant content projects no model message. Keep tool pairing balanced: deleting
    one side of a call/result pair must also drop or strip the other side, or the next
    provider request is invalid.
-6. **Every emitted event needs a positive integer `turn`/`step`.** The JSONL read
-   path (`assertV4RowAdmission`) rejects `developer/message` and `system/message` with
-   `0`; a zero coordinate makes the session unreadable on resume.
+6. **Coordinates must be positive *and* name the open Turn/Step.** Two different
+   checks apply on the JSONL read path:
+   - `assertV4RowAdmission` requires a positive integer `turn`/`step` on
+     `developer/message` and `system/message` (zero makes the session unreadable);
+   - `assertReleasedV4Relationships` (`Relationships.requireStep`) requires
+     `system/message`, `developer/message`, `assistant/message`/`assistant/attempt`
+     and `tool/*` writes to match the **currently open** Turn/Step exactly, and
+     rejects the artifact with `… does not match an open turn and step` otherwise.
+     `user/message` surface writes are not lifecycle-checked this way.
+
+   The History tab operates while the agent is idle, so no Turn/Step is open: in-place
+   writes that depend on an open step (delete tombstones, assistant rewrites, system
+   prompt replacements) are **not representable in an append-only log** unless applied
+   inside a rewritten branch. Classify such operations as `needs-branch` and route
+   them through the fork/rebuild path instead of appending them while idle.
 7. **The system prompt override uses the `history-editor-` message-id prefix**, not a
    custom source kind: the format requires `system/message` sources to be
    `system-prompt`. `index.js` pins `system-prompt/assemble` to that text so the agent
@@ -103,6 +115,13 @@ them can make a session unreadable or break the next model request.
 - Every new operation needs a Host test that drives a real detached `Session`, asserts
   the `deriveMessages()` change, runs `assertV4RowAdmission` on every event, and calls
   `Session.create(seed)` to prove the log is restorable (`assertRestorable`).
+- Validate the **full released read path**, not just per-row admission:
+  `assertReleasedV4Relationships(artifact, KNOWN_SESSION_EVENT_TYPES)` (or an equivalent
+  JSONL write/read round-trip) must accept the log. Per-row admission alone accepts
+  writes the lifecycle relationship validator later rejects with “does not match an
+  open turn and step”, which only surfaces when a real session is resumed.
+- Operations that need an open Turn/Step must be tested for the `needs-branch`
+  classification when invoked while idle, and covered through the rebuild suite.
 - Rebuild changes additionally assert message order/roles, tool-call stripping, and
   system-prompt override detection.
 - Client pure helpers (fold, draft merge/payload, predicates, error localization) are
