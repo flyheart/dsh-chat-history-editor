@@ -160,7 +160,70 @@ check('edit a user message through the command wrapper', () => {
   assert.deepEqual(derivedTexts(session), ['edited', 'hi'])
 })
 
-check('a step-scoped operation is classified as needing a branch while idle', () => {
+check('an idle delete is framed in one short turn instead of forking a branch', () => {
+  const session = buildSession()
+  const { definition } = mount(session)
+  const agent = liveAgent(session, 1)
+  const assistantSeq = session.surface.nodes.find((seq) => session.eventAt(seq)?.type === 'assistant/message')
+  const result = definition.handler({
+    rawInput: JSON.stringify({ op: 'delete', seqs: [assistantSeq] }),
+    agent
+  })
+  assert.deepEqual(result, { kind: 'success' })
+  assert.deepEqual(derivedTexts(session), ['hello'])
+  const framing = []
+  for (let seq = 0; seq < session.seq; seq += 1) framing.push(session.eventAt(seq).type)
+  assert.ok(framing.includes('turn/start'), 'the write is framed in a turn')
+  const shortTurn = session.eventAt(session.seq - 1).data.turn
+  assert.equal(agent.phase.lastTurn, shortTurn, 'the live Agent continues after the framing turn')
+
+  // The next prompt opens the following turn and the stored log stays loadable.
+  session.append('turn/start', { turn: shortTurn + 1 })
+  session.append('step/start', { turn: shortTurn + 1, step: 1 })
+  session.append(
+    'user/message',
+    { id: 'next-1', role: 'user', content: [{ type: 'text', text: 'next prompt' }], source: { kind: 'user' } },
+    { surfaceOp: 'append' }
+  )
+  session.append('step/end', { turn: shortTurn + 1, step: 1 })
+  session.append('turn/end', { turn: shortTurn + 1, reason: { kind: 'completed' } })
+  const events = session.snapshotEvents()
+  assert.doesNotThrow(() =>
+    restoreReleasedV4Artifact({ header: logicalHeader(session), events, inheritedEventCount: 0 }, new Set(events.map((event) => event.type)))
+  )
+})
+
+check('an in-place system prompt edit keeps the override through the framing turn', () => {
+  const session = Session.create('command-system-inline')
+  session.append('turn/start', { turn: 1 })
+  session.append('step/start', { turn: 1, step: 1 })
+  session.append(
+    'system/message',
+    { turn: 1, step: 1, message: { id: 's1', role: 'system', content: [{ type: 'text', text: 'assembled prompt' }], source: { kind: 'system-prompt' } } },
+    { surfaceOp: 'append' }
+  )
+  session.append(
+    'user/message',
+    { id: 'u1', role: 'user', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } },
+    { surfaceOp: 'append' }
+  )
+  session.append('step/end', { turn: 1, step: 1 })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const { definition } = mount(session)
+  const agent = liveAgent(session, 1)
+  const systemSeq = session.surface.nodes[0]
+  const result = definition.handler({ rawInput: JSON.stringify({ op: 'edit', seq: systemSeq, text: 'edited prompt' }), agent })
+  assert.deepEqual(result, { kind: 'success' })
+  const events = session.snapshotEvents()
+  assert.doesNotThrow(() =>
+    restoreReleasedV4Artifact({ header: logicalHeader(session), events, inheritedEventCount: 0 }, new Set(events.map((event) => event.type)))
+  )
+  const marked = session.eventAt(session.surface.nodes[0])
+  assert.equal(marked.type, 'system/message')
+  assert.match(String(marked.data.message.id), /^history-editor-/)
+})
+
+check('an in-place edit is still refused when the Agent exposes no turn counter', () => {
   const session = buildSession()
   const { definition } = mount(session)
   const before = session.seq

@@ -132,6 +132,26 @@ export function openStepPosition(session) {
 }
 
 /**
+ * Read the Turn that is currently open in the live log, if any.
+ *
+ * A log normally has no open turn while the History tab edits, but a crash tail
+ * or another writer can leave one; framing a new turn on top of it would make
+ * the stored log unreadable, so callers refuse that case.
+ *
+ * @param {object} session - live Session instance.
+ * @returns {number | undefined} the open turn number, or undefined.
+ */
+export function openTurnNumber(session) {
+  let turn = null
+  for (let seq = 0; seq < session.seq; seq += 1) {
+    const event = session.eventAt(seq)
+    if (event?.type === 'turn/start') turn = Number.isInteger(event.data?.turn) ? event.data.turn : null
+    else if (event?.type === 'turn/end') turn = null
+  }
+  return turn ?? undefined
+}
+
+/**
  * Resolve the coordinates one mutation must write, refusing an in-place write
  * the read path would reject later.
  * @param {object} session - live Session instance.

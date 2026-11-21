@@ -88,11 +88,13 @@ them can make a session unreadable or break the next model request.
      rejects the artifact with `… does not match an open turn and step` otherwise.
      `user/message` surface writes are not lifecycle-checked this way.
 
-   The History tab operates while the agent is idle, so no Turn/Step is open: in-place
-   writes that depend on an open step (delete tombstones, assistant rewrites, system
-   prompt replacements) are **not representable in an append-only log** unless applied
-   inside a rewritten branch. Classify such operations as `needs-branch` and route
-   them through the fork/rebuild path instead of appending them while idle.
+   The History tab operates while the agent is idle, so no Turn/Step is open.
+   `history-ops.js` classifies such a write as `needs-branch`; `index.js` then frames
+   it in one short turn (`turn/start` + `step/start`, the write, `step/end` +
+   `turn/end`) and aligns the Agent's cached turn counter so the next prompt opens the
+   following turn. The framing turn carries no messages; never append such an event
+   outside a turn, and refuse with `needs-branch` when the Agent exposes no counter
+   (an old Harness build) rather than leaving a log no resume can read.
 7. **The system prompt override uses the `history-editor-` message-id prefix**, not a
    custom source kind: the format requires `system/message` sources to be
    `system-prompt`. `index.js` pins `system-prompt/assemble` to that text so the agent
@@ -123,8 +125,10 @@ them can make a session unreadable or break the next model request.
   JSONL write/read round-trip) must accept the log. Per-row admission alone accepts
   writes the lifecycle relationship validator later rejects with “does not match an
   open turn and step”, which only surfaces when a real session is resumed.
-- Operations that need an open Turn/Step must be tested for the `needs-branch`
-  classification when invoked while idle, and covered through the rebuild suite.
+- Operations that need an open Turn/Step must be tested through the short-turn
+  framing path (the stored log still passes the full read path and the Agent's cached
+  counter advances), for the `needs-branch` refusal when the Agent exposes no counter,
+  and through the rebuild suite for arbitrary rewrites.
 - Rebuild changes additionally assert message order/roles, tool-call stripping, and
   system-prompt override detection.
 - Client pure helpers (fold, draft merge/payload, predicates, error localization) are

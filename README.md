@@ -39,21 +39,22 @@ browser). It has two behaviors:
 
 | Mode | Behavior |
 |---|---|
-| Off (default) | Immediate in-place operations for everything the append-only log can express while the agent is idle: edit a **user-role** row (human message or injected context) and append a **user** message. Every other action — system-prompt edit, assistant rewrite, delete, append assistant, restore default — is step-scoped and cannot be written while idle, so it switches the tab into branch rewrite and drops the change into the draft: press **Apply rewrite** to fork it. The Chat transcript stays append-only. |
+| Off (default) | Immediate in-place operations for every row, no new session. Writes the format admits only inside an open Turn/Step — system-prompt and assistant rewrites, deletions, appended assistant messages, restoring the default prompt — are framed by the Host in **one short internal turn** and the live Agent's cached turn counter is aligned, so the model history and this ledger update immediately. The framing turn carries no messages: the Chat transcript and the visible conversation are unchanged. |
 | On | Every row becomes editable and deletable, and a new message can be inserted above/below any row. Changes stay in a **draft** (marked 待修改/待删除/待插入) until you press **Apply rewrite**: the plugin forks the session at its first event, rebuilds the edited conversation into the new child session, flushes it, and switches the page to it. |
 
-Why a branch: the session log is append-only and the format forbids
-`assistant/message` replacements, so editing an assistant message in place (or
-inserting mid-history) cannot be expressed in the current log. Deletions and
-system-prompt/assistant writes have a second constraint: the format admits
-`system/message`, `developer/message`, `assistant/message` and `tool/*` appends
-only while a Turn **and** a Step are open. The History tab edits while the agent
-is idle, when no step is open, so those writes are not representable at all —
-the Host classifies them `needs-branch` instead of appending a log that would
-fail every later resume with `… does not match an open turn and step`, and the
-Client switches to the branch draft. A rewritten branch is a normal session
-whose Chat, Trajectory, and model history all show the edited conversation; the
-original session is left untouched and its edits remain a draft you can discard.
+Why a branch: the session log is append-only, and the format forbids
+`assistant/message` replacements, so arbitrary-position assistant rewrites and
+mid-history inserts cannot be expressed in the current log — only a rebuilt
+branch can carry them. Ordinary in-place edits use a different device: the format
+admits `system/message`, `developer/message`, `assistant/message` and `tool/*`
+appends only while a Turn **and** a Step are open, and the History tab edits
+while the agent is idle. The Host therefore opens one short turn around such a
+write and aligns the Agent's cached turn counter, which keeps the log readable
+without rewriting stored events; when a Harness build exposes no counter the
+mutation is refused with `needs-branch` instead of leaving an un-resumable log.
+A rewritten branch is a normal session whose Chat, Trajectory, and model history
+all show the edited conversation; the original session is left untouched and its
+edits remain a draft you can discard.
 
 What the rebuild preserves:
 
@@ -77,10 +78,10 @@ rewrites stored events. It appends well-formed *surface* events:
 | Operation | Appended events |
 |---|---|
 | Edit user-role message (human or injected context) | `user/message` replacement of its own surface node; the recorded source kind is preserved. Writable in place while idle. |
-| Delete messages | empty `developer/message` replacement: a surface node that projects no model message. Step-scoped → branch rewrite. |
-| Add message | ordinary surface append at the tail (user in place while idle; assistant is step-scoped → branch rewrite). |
-| Edit assistant message | fresh `assistant/message` append for the same Turn/Step plus a hidden tombstone for the old node. Step-scoped → branch rewrite. |
-| Edit system prompt | `system/message` replacement (identity prefixed `history-editor-`) + a Host assembly pin; step-scoped → branch rewrite. **Restore default** clears it by rebuilding a branch whose system head is empty, so the next request re-renders the assembly. |
+| Delete messages | empty `developer/message` replacement: a surface node that projects no model message. Step-scoped → framed in one short turn. |
+| Add message | ordinary surface append at the tail (user append needs no turn; an assistant append is step-scoped → framed in one short turn). |
+| Edit assistant message | fresh `assistant/message` append for the same Turn/Step plus a hidden tombstone for the old node. Step-scoped → framed in one short turn. |
+| Edit system prompt | `system/message` replacement (identity prefixed `history-editor-`) + a Host assembly pin. Step-scoped → framed in one short turn. **Restore default** replaces the override nodes with empty ones, so the next request re-renders the assembly. |
 
 Consequences you should know about:
 
@@ -113,8 +114,9 @@ Consequences you should know about:
   `system/message`, `developer/message`, `assistant/message` and `tool/*`
   writes to match the open Turn/Step exactly. A write outside an open step is
   accepted in memory but makes the stored log unreadable on the next resume
-  (`… does not match an open turn and step`). This is why the Host classifies
-  those mutations `needs-branch`; the host probes assert the full read path
+  (`… does not match an open turn and step`). This is why the Host frames a
+  step-scoped mutation in one short turn for the duration of the write and then
+  aligns the Agent's cached counter; the host probes assert the full read path
   (`restoreReleasedV4Artifact`) after every operation, not just row admission.
 
 ## How the UI reaches the Host
@@ -151,6 +153,12 @@ later resume would reject.
 
 ## Known decisions
 
+- **In-place edits add one empty turn.** A step-scoped write is legal only inside
+  an open Turn/Step, so the Host opens one short turn around it and syncs the
+  Agent's cached counter. That turn has a `step/start`/`step/end` pair and no
+  messages: the Chat transcript ignores it and the model history is unchanged,
+  but the Trajectory tab shows an extra empty turn, and an assistant rewrite is
+  grouped under it in the ledger (replacements keep their shadowed node's turn).
 - **A rewritten branch aligns its live Agent turn counter.** The fork creates
   the child Agent *before* the rebuild appends the rewritten turns, so that
   Agent caches `lastTurn: 0`. The rebuild therefore finishes by setting the

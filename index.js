@@ -14,7 +14,7 @@
  * @module @local/chat-history-editor
  */
 
-import { HistoryError, executeHistoryOperation, lastRecordedTurn, rebuildRewrittenSession, systemPromptOverride } from './history-ops.js'
+import { HistoryError, executeHistoryOperation, lastRecordedTurn, openTurnNumber, rebuildRewrittenSession, systemPromptOverride } from './history-ops.js'
 
 /** Required services: the command registry and the in-memory session store. */
 export const inject = ['commands', 'sessions']
@@ -24,22 +24,6 @@ export const COMMAND_NAME = 'history'
 
 /** Shape hint shown by command discovery surfaces. */
 const INPUT_HINT = '{"op":"edit|delete|append", ...}'
-
-/**
- * Compose one classified command result from a history operation.
- * @param {() => object} operation - synchronous operation body.
- * @returns {object} a `CommandResult`.
- */
-function settle(operation) {
-  try {
-    operation()
-    return { kind: 'success' }
-  } catch (error) {
-    if (error instanceof HistoryError) return { kind: 'error', text: `[${error.code}] ${error.message}` }
-    const message = error instanceof Error ? error.message : String(error)
-    return { kind: 'error', text: `[internal] ${message}` }
-  }
-}
 
 /**
  * Decode the operation payload carried after the command name.
@@ -120,7 +104,57 @@ export function apply(ctx) {
     const session = sessionOf(agent)
     if (session === undefined) return { kind: 'error', text: '[no-session] the live session is unavailable' }
     if (payload.op === 'rebuild') return rebuildOnBranch(ctx, agent, session, payload)
-    return settle(() => executeHistoryOperation(session, payload))
+    return runInPlace(ctx, agent, session, payload)
+  }
+
+  /**
+   * Apply one history operation in place.
+   *
+   * The read path admits step-scoped writes (system/assistant messages,
+   * deletion tombstones) only inside an open Turn/Step, and the History tab runs
+   * while the agent is idle. Rather than forking a branch, open one short turn,
+   * perform the write inside it, close it, and align the live Agent's cached turn
+   * counter so the next prompt opens the following turn. The turn carries no
+   * messages, so the Chat transcript and the model history are unaffected.
+   *
+   * @param {object} pluginCtx - plugin context.
+   * @param {object} agent - command receiving Agent.
+   * @param {object} session - live Session.
+   * @param {object} payload - decoded operation.
+   * @returns {{ kind: string, text?: string }} a classified command result.
+   */
+  const runInPlace = (pluginCtx, agent, session, payload) => {
+    try {
+      try {
+        executeHistoryOperation(session, payload)
+        return { kind: 'success' }
+      } catch (error) {
+        if (!(error instanceof HistoryError) || error.code !== 'needs-branch') throw error
+        // No open step: instead of failing (or forking), frame the write in one
+        // short turn so the stored log stays readable. Refuse when another writer
+        // holds the framing (open turn or maintenance phase).
+        if (!canAlignBranchTurns(agent)) throw error
+        if (agent.phase.kind !== 'idle' || openTurnNumber(session) !== undefined) throw error
+        const turn = lastRecordedTurn(session) + 1
+        session.append('turn/start', { turn })
+        session.append('step/start', { turn, step: 1 })
+        try {
+          executeHistoryOperation(session, payload)
+        } finally {
+          session.append('step/end', { turn, step: 1 })
+          session.append('turn/end', { turn, reason: { kind: 'completed' } })
+          if (!alignBranchTurns(agent, session)) {
+            pluginCtx.logger.warn('chat-history-editor: could not align the turn counter after an in-place edit')
+          }
+        }
+        return { kind: 'success' }
+      }
+    } catch (error) {
+      if (error instanceof HistoryError) return { kind: 'error', text: `[${error.code}] ${error.message}` }
+      const message = error instanceof Error ? error.message : String(error)
+      pluginCtx.logger.warn(`chat-history-editor: edit failed: ${message}`)
+      return { kind: 'error', text: `[internal] ${message}` }
+    }
   }
 
   /**

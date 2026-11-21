@@ -332,7 +332,6 @@ window.__ModuleLoader__.load({
       'meta.edited': '已修改',
       'meta.deleted': '待删除',
       'notice.rewritten': '已生成改写分支，正在打开…',
-      'notice.needsBranch': '该操作无法原地写入会话日志（当前没有打开的轮次），已切换为分支改写并放入草稿：点“应用改写”生成新分支后生效。',
       'error.too-large': '改动内容过大，请分批应用',
       'error.no-source': '找不到源会话日志，请重新打开会话后再试',
       'error.needs-branch': '该操作无法原地写入会话日志；请开启“分支改写”后应用改写',
@@ -451,7 +450,6 @@ window.__ModuleLoader__.load({
       'meta.edited': 'edited',
       'meta.deleted': 'pending delete',
       'notice.rewritten': 'Rewrite branch created; opening it…',
-      'notice.needsBranch': 'This change cannot be appended in place (no turn is open), so it was switched to branch rewrite and placed in the draft: press Apply rewrite to fork it.',
       'error.too-large': 'The changes are too large; apply them in smaller batches',
       'error.no-source': 'The source session log is unavailable; reopen the session and retry',
       'error.needs-branch': 'This change cannot be written in place; enable Branch rewrite and apply it there',
@@ -929,22 +927,6 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /**
-       * Switch into branch-rewrite mode because the requested change cannot be
-       * appended in place: the log has no open turn/step, and the format admits
-       * step-scoped writes (system/developer/assistant messages, deletions) only
-       * inside an open step. The change lands in the draft instead.
-       */
-      const enterBranchMode = () => {
-        setForkMode(true)
-        writeForkMode(true)
-        setNotice({ text: t('notice.needsBranch') })
-      }
-
-      /** @param {object} row @returns {boolean} whether the row can be rewritten in place. */
-      const canEditInPlace = (row) =>
-        row !== undefined && (row.role === 'user' || (row.role === 'context' && row.eventType === 'user/message'))
-
       const beginEdit = (row) => {
         setConfirmSeq(null)
         setEditing({ seq: row.seq })
@@ -953,11 +935,7 @@ window.__ModuleLoader__.load({
 
       const saveEdit = async () => {
         if (editing === null) return
-        const target = rows.find((row) => row.seq === editing.seq)
-        if (forkMode || !canEditInPlace(target)) {
-          // Assistant and system-prompt rewrites are step-scoped appends, so they
-          // cannot be written while the session is idle: draft them for a branch.
-          if (!forkMode) enterBranchMode()
+        if (forkMode) {
           setDraftEdits((current) => {
             const next = new Map(current)
             next.set(editing.seq, draft)
@@ -972,19 +950,18 @@ window.__ModuleLoader__.load({
 
       const deleteRow = async (row) => {
         setConfirmSeq(null)
-        // A deletion is an empty developer/message replacement, which is only
-        // admissible inside an open step: always apply it through a branch rebuild.
-        if (!forkMode) enterBranchMode()
-        markDraftDeleted(row.seq)
+        const noticeKey =
+          row.sourceKind === 'runtime-context'
+            ? 'notice.deletedRuntime'
+            : row.sourceKind === 'time-context'
+              ? 'notice.deletedTime'
+              : 'notice.deleted'
+        await apply({ op: 'delete', seqs: [row.seq] }, noticeKey)
       }
 
       const resetSystemPrompt = async () => {
         setConfirmReset(false)
-        // Restoring the default prompt replaces the override nodes, which is
-        // step-scoped as well. In a branch an empty system head is emitted by the
-        // rebuild, so the next request re-renders the assembled prompt.
-        if (!forkMode) enterBranchMode()
-        for (const row of rows) if (row.role === 'system') markDraftDeleted(row.seq)
+        await apply({ op: 'reset-system' }, 'notice.systemReset')
       }
 
       const markDraftDeleted = (seq) => {
@@ -1074,9 +1051,7 @@ window.__ModuleLoader__.load({
       const submitAdd = async (event) => {
         if (event !== undefined && typeof event.preventDefault === 'function') event.preventDefault()
         if (addText.trim() === '' || busy) return
-        if (forkMode || addRole === 'assistant') {
-          // An appended assistant message is step-scoped; user appends stay inline.
-          if (!forkMode) enterBranchMode()
+        if (forkMode) {
           insertSeqRef.current += 1
           setDraftInserts((current) => [...current, { id: String(insertSeqRef.current), afterSeq: 'end', role: addRole, text: addText }])
           setAddText('')
