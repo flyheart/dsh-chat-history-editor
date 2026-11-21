@@ -101,7 +101,10 @@ them can make a session unreadable or break the next model request.
 8. **Branch rebuild synthesizes a fresh log** in a forked child (fork at `atSeq: 0`):
    policy events are replayed, then canonical turns/steps/messages/tool calls/tool
    results are appended with client-supplied draft rows, and the page switches to the
-   child. Do not renumber or mutate source-session events.
+   child. Do not renumber or mutate source-session events. The fork creates the child
+   Agent *before* the rebuild, so the rebuild must also align that Agent's cached turn
+   counter (`agent.phase.lastTurn`) with the highest rebuilt turn — otherwise the next
+   prompt opens a colliding `turn/start` and the branch cannot be resumed.
 9. **Host↔Client transport is the `/history` session command.** A profile plugin
    cannot add a Client Remote namespace (the set is fixed at build time), so the
    Client calls `ctx.remote.commands.execute(sessionId, '/history {…}', [])`. Keep

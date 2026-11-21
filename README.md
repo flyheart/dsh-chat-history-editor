@@ -151,6 +151,15 @@ later resume would reject.
 
 ## Known decisions
 
+- **A rewritten branch aligns its live Agent turn counter.** The fork creates
+  the child Agent *before* the rebuild appends the rewritten turns, so that
+  Agent caches `lastTurn: 0`. The rebuild therefore finishes by setting the
+  Agent's cached turn to the highest rebuilt turn; without it the next prompt in
+  the branch appends `turn/start 1` on top of the rebuilt turns and the stored
+  log then fails every resume with `turn/start does not open the expected turn`.
+  If a Harness build does not expose that counter, the rebuild is refused with
+  `[unsupported]` instead of producing an unreadable branch.
+
 - **`session.eventAt()` exception.** The Host reads each current surface node's
   event with `session.eventAt(seq)`, which the Session package marks deprecated
   in favor of `ctx.sessionProjections` units. A fold unit cannot supply the

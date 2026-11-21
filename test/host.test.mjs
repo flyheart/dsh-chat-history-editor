@@ -509,6 +509,7 @@ test('rebuild a rewritten conversation into a child session', () => {
   const target = Session.create('ops-rebuild-target')
   const summary = ops.rebuildRewrittenSession(target, source.snapshotEvents(), { rows: draftRows })
   assert.ok(summary.records > 0)
+  assert.equal(ops.lastRecordedTurn(target), summary.turns, 'the rebuild ends on the turn it reports')
   const messages = derived(target.deriveMessages())
   assert.deepEqual(messages.map((message) => message.text), ['hello', 'inserted between turns', 'run the tool', 'rewritten answer', 'tool output'])
   assertRestorable(target, 'rebuild')

@@ -14,7 +14,7 @@
  * @module @local/chat-history-editor
  */
 
-import { HistoryError, executeHistoryOperation, rebuildRewrittenSession, systemPromptOverride } from './history-ops.js'
+import { HistoryError, executeHistoryOperation, lastRecordedTurn, rebuildRewrittenSession, systemPromptOverride } from './history-ops.js'
 
 /** Required services: the command registry and the in-memory session store. */
 export const inject = ['commands', 'sessions']
@@ -119,24 +119,71 @@ export function apply(ctx) {
     }
     const session = sessionOf(agent)
     if (session === undefined) return { kind: 'error', text: '[no-session] the live session is unavailable' }
-    if (payload.op === 'rebuild') return rebuildOnBranch(ctx, session, payload)
+    if (payload.op === 'rebuild') return rebuildOnBranch(ctx, agent, session, payload)
     return settle(() => executeHistoryOperation(session, payload))
+  }
+
+  /**
+   * Whether the live Agent exposes the cached turn counter a branch rebuild must
+   * align. The fork creates the child Agent before the rewrite, so an Agent that
+   * cannot be aligned would open a colliding `turn/start` on the next prompt and
+   * leave a log that no resume can read.
+   * @param {object} agent - command receiving Agent.
+   * @returns {boolean} whether the counter is readable.
+   */
+  const canAlignBranchTurns = (agent) => {
+    if (agent === null || typeof agent !== 'object') return false
+    const phase = agent.phase
+    return phase !== null && typeof phase === 'object' && Number.isInteger(phase.lastTurn)
+  }
+
+  /**
+   * Align the live Agent's cached turn counter with a rebuilt branch log.
+   *
+   * The Session Controller creates the child Agent while forking, before the
+   * rebuild appends the rewritten turns, so the Agent caches `lastTurn: 0`.
+   * Without this alignment its next prompt appends `turn/start 1` on top of the
+   * rebuilt turns; the read path then rejects the stored log with
+   * `turn/start does not open the expected turn`.
+   *
+   * @param {object} agent - command receiving Agent.
+   * @param {object} session - rebuilt child Session.
+   * @returns {boolean} whether the counter now covers the rebuilt turns.
+   */
+  const alignBranchTurns = (agent, session) => {
+    const lastTurn = lastRecordedTurn(session)
+    const phase = agent !== null && typeof agent === 'object' ? agent.phase : undefined
+    if (phase === null || typeof phase !== 'object' || !Number.isInteger(phase.lastTurn)) return false
+    if (lastTurn <= phase.lastTurn) return true
+    if (typeof agent.setPhase === 'function') agent.setPhase({ kind: 'idle', lastTurn })
+    else phase.lastTurn = lastTurn
+    return true
   }
 
   /**
    * Rewrite one freshly forked child session from a client draft.
    * @param {object} pluginCtx - plugin context.
+   * @param {object} agent - command receiving Agent (the child's live Agent).
    * @param {object} session - live child Session.
    * @param {object} payload - decoded rebuild payload.
    * @returns {Promise<object>} a `CommandResult`.
    */
-  const rebuildOnBranch = async (pluginCtx, session, payload) => {
+  const rebuildOnBranch = async (pluginCtx, agent, session, payload) => {
     try {
       if (typeof payload.sourceSessionId !== 'string' || payload.sourceSessionId.length === 0) {
         throw new HistoryError('bad-request', 'rebuild requires a sourceSessionId')
       }
       const sourceEvents = await sourceEventsOf(pluginCtx, payload.sourceSessionId)
+      if (!canAlignBranchTurns(agent)) {
+        throw new HistoryError(
+          'unsupported',
+          'this Harness build does not expose the branch turn counter, so a rewritten branch could not be resumed'
+        )
+      }
       rebuildRewrittenSession(session, sourceEvents, payload.draft)
+      if (!alignBranchTurns(agent, session)) {
+        throw new HistoryError('unsupported', 'the rebuilt branch could not align its live turn counter')
+      }
       try {
         await pluginCtx.sessions.flush(session)
       } catch (error) {

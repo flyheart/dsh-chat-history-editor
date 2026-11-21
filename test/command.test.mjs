@@ -13,6 +13,7 @@ import { loadDshModules, skipSuite } from './support.mjs'
 const dsh = loadDshModules()
 if (dsh === undefined) skipSuite('command.test.mjs')
 const { Session } = await import(dsh.sessionModule)
+const { restoreReleasedV4Artifact } = await import(dsh.formatModule)
 const { apply, inject, COMMAND_NAME } = await import('../index.js')
 
 assert.deepEqual(inject, ['commands', 'sessions'])
@@ -56,6 +57,30 @@ function mount(session, extraSessions = {}) {
   apply(ctx)
   assert.ok(definition, 'apply registers a command definition')
   return { ctx, definition, warned }
+}
+
+/**
+ * A live-Agent stub: the command wrapper reads `status`, `session`, and the
+ * cached branch turn counter the rebuild must align.
+ * @param {object} session - agent Session.
+ * @param {number} lastTurn - cached last turn.
+ * @returns {object} agent stub.
+ */
+function liveAgent(session, lastTurn = 0) {
+  return {
+    id: session.id,
+    status: 'idle',
+    session,
+    phase: { kind: 'idle', lastTurn },
+    setPhase(next) {
+      this.phase = next
+    }
+  }
+}
+
+/** @param {object} session @returns {object} logical V4 header for read-path validation. */
+function logicalHeader(session) {
+  return { version: 4, id: session.id, createdAt: session.header.createdAt, isSeeded: false, delegationDepth: 0 }
 }
 
 function buildSession() {
@@ -209,10 +234,11 @@ async function asyncCheck(name, body) {
   }
 }
 
-await asyncCheck('rebuild rewrites a forked child from the source log', async () => {
+await asyncCheck('rebuild rewrites a forked child and aligns its live turn counter', async () => {
   const source = buildSession()
   const child = Session.create('command-rebuild-child')
   const { definition } = mount(child, { [source.id]: source })
+  const agent = liveAgent(child)
   const result = await definition.handler({
     rawInput: JSON.stringify({
       op: 'rebuild',
@@ -224,7 +250,7 @@ await asyncCheck('rebuild rewrites a forked child from the source log', async ()
         ]
       }
     }),
-    agent: { id: child.id, status: 'idle', session: child }
+    agent
   })
   assert.deepEqual(result, { kind: 'success' })
   assert.deepEqual(derivedTexts(child), ['rewritten hello', 'rewritten hi'])
@@ -232,6 +258,46 @@ await asyncCheck('rebuild rewrites a forked child from the source log', async ()
   for (let seq = 0; seq < child.seq; seq += 1) types.push(child.eventAt(seq).type)
   assert.ok(types.includes('turn/start'))
   assert.ok(types.includes('step/end'))
+  const rebuiltTurn = child.eventAt(child.seq - 1).data.turn
+  assert.equal(agent.phase.lastTurn, rebuiltTurn, 'the live Agent counter follows the rebuilt turns')
+
+  // A prompt in the branch opens the next turn: the log must stay loadable.
+  child.append('turn/start', { turn: rebuiltTurn + 1 })
+  child.append('step/start', { turn: rebuiltTurn + 1, step: 1 })
+  child.append(
+    'user/message',
+    { id: 'next-1', role: 'user', content: [{ type: 'text', text: 'continue the branch' }], source: { kind: 'user' } },
+    { surfaceOp: 'append' }
+  )
+  child.append(
+    'assistant/message',
+    { turn: rebuiltTurn + 1, step: 1, message: { id: 'next-2', role: 'assistant', content: [{ type: 'text', text: 'ok' }], source: { kind: 'model', provider: 'p', model: 'm' } }, stream: [] },
+    { surfaceOp: 'append' }
+  )
+  child.append('step/end', { turn: rebuiltTurn + 1, step: 1 })
+  child.append('turn/end', { turn: rebuiltTurn + 1, reason: { kind: 'completed' } })
+  const events = child.snapshotEvents()
+  assert.doesNotThrow(() =>
+    restoreReleasedV4Artifact({ header: logicalHeader(child), events, inheritedEventCount: 0 }, new Set(events.map((event) => event.type)))
+  )
+})
+
+await asyncCheck('rebuild refuses a Harness that exposes no branch turn counter', async () => {
+  const source = buildSession()
+  const child = Session.create('command-rebuild-no-counter')
+  const { definition } = mount(child, { [source.id]: source })
+  const before = child.seq
+  const result = await definition.handler({
+    rawInput: JSON.stringify({
+      op: 'rebuild',
+      sourceSessionId: source.id,
+      draft: { rows: [{ role: 'user', content: [{ type: 'text', text: 'x' }], position: { turn: 1, step: 1 } }] }
+    }),
+    agent: { id: child.id, status: 'idle', session: child }
+  })
+  assert.equal(result.kind, 'error')
+  assert.match(result.text, /^\[unsupported\] /)
+  assert.equal(child.seq, before, 'a refused rebuild appends nothing')
 })
 
 await asyncCheck('rebuild reports an unknown source session', async () => {

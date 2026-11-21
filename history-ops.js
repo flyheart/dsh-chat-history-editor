@@ -709,6 +709,27 @@ function normalizeDraftToolPairing(rows) {
 }
 
 /**
+ * Read the highest Turn number recorded in a live log.
+ *
+ * The branch rebuild appends canonical turns directly to the child Session, so
+ * the child's live Agent (created by the fork before the rebuild) keeps a stale
+ * cached turn counter and the next prompt would open a colliding `turn/start`.
+ * Callers align that counter with this value after a rebuild.
+ *
+ * @param {object} session - live Session.
+ * @returns {number} the highest recorded positive turn, or 0 for an empty log.
+ */
+export function lastRecordedTurn(session) {
+  let lastTurn = 0
+  for (let seq = 0; seq < session.seq; seq += 1) {
+    const event = session.eventAt(seq)
+    const turn = event?.data?.turn
+    if (Number.isInteger(turn) && turn > lastTurn) lastTurn = turn
+  }
+  return lastTurn
+}
+
+/**
  * Rebuild a rewritten conversation into one freshly forked child session.
  * Every emitted event is a canonical surface append with positive Turn/Step
  * coordinates, so the child is a normal, resumable session whose Chat,
@@ -738,11 +759,7 @@ export function rebuildRewrittenSession(target, sourceEvents, draft) {
     target.append(event.type, cloneJson(event.data))
   }
 
-  let baseTurn = 0
-  for (let seq = 0; seq < target.seq; seq += 1) {
-    const event = target.eventAt(seq)
-    if (event !== undefined && Number.isInteger(event.data?.turn) && event.data.turn > baseTurn) baseTurn = event.data.turn
-  }
+  const baseTurn = lastRecordedTurn(target)
 
   // The effective system prompt is the last non-empty system row; earlier
   // prompt-update records are historical and are dropped.
